@@ -38,7 +38,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'https://api.scrape.do/?url=' + encodeURIComponent('https://allegro.pl/kategoria/x-' + $json.allegroCategoryId + '?string=' + $json.keyword + '&order=n') + '&geoCode=pl&render=false&output=html' }}",
+        "url": "={{ 'https://api.scrape.do/?url=' + encodeURIComponent('https://allegro.pl/kategoria/x-' + $json.allegroCategoryId + '?string=' + $json.keyword + '&order=n') + '&geoCode=pl&render=false&output=raw' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpQueryAuth",
         "options": {
