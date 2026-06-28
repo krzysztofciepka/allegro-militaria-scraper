@@ -65,8 +65,8 @@
       ],
       "credentials": {
         "httpQueryAuth": {
-          "id": "scrapedot001",
-          "name": "Scrape.do"
+          "id": "dvSHyLWMPkYdlb8o",
+          "name": "scrape.do"
         }
       },
       "continueOnFail": true
