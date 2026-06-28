@@ -1,0 +1,387 @@
+{
+  "name": "Allegro Militaria Monitor",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2,14 * * *"
+            }
+          ]
+        }
+      },
+      "id": "f0000003-0001-4000-0000-000000000001",
+      "name": "Every 8am and 8pm",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        256,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Body of the Split Keywords n8n Code node.\n\nconst KEYWORDS = ['tasak', 'hirschfanger', 'pruski'];\nconst ALLEGRO_CATEGORY_ID = '3690';\nconst LOKALNIE_CATEGORY_PATH = 'bron/bron-biala-3691';\n\nfunction splitKeywords() {\n  return KEYWORDS.map(keyword => ({\n    json: {\n      keyword,\n      allegroCategoryId: ALLEGRO_CATEGORY_ID,\n      lokalnieCategoryPath: LOKALNIE_CATEGORY_PATH,\n    },\n  }));\n}\n\nreturn splitKeywords();"
+      },
+      "id": "f0000003-0001-4000-0000-000000000002",
+      "name": "Split Keywords",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        512,
+        400
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.scrape.do/?url=' + encodeURIComponent('https://allegro.pl/kategoria/x-' + $json.allegroCategoryId + '?string=' + $json.keyword + '&order=n') + '&geoCode=pl&render=false&output=html' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 90000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 2,
+            "waitBetweenTries": 5000
+          }
+        }
+      },
+      "id": "f0000003-0001-4000-0000-000000000003",
+      "name": "Scrape Allegro",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        752,
+        400
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "scrapedot001",
+          "name": "Scrape.do"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Allegro.pl listing parser. Pure JS, no dependencies.\n// Same constraint as the original n8n Code node — runs under plain node AND inside n8n.\n//\n// Exports:\n//   parseAllegro(html)          -> Offer[]   (core algorithm, preserved from existing workflow)\n//   looksLikeDataDomeBlock(html) -> boolean  (true if response is a DataDome challenge page)\n//   parseAllegroOffers(input)  -> n8n-item[] (outer loop wrapper used by Code node)\n\nfunction parseAllegro(html) {\n  const offers = [];\n  const seen = new Set();\n\n  function textOf(t) {\n    if (!t) return '';\n    if (typeof t === 'string') return t;\n    if (typeof t === 'object' && typeof t.text === 'string') return t.text;\n    return '';\n  }\n  function numId(x) {\n    return (x != null && /^\\d{5,}$/.test(String(x))) ? String(x) : '';\n  }\n  function idOf(node) {\n    return numId(node.offerId) || numId(node.id);\n  }\n  function priceOf(node) {\n    const p = node.price || {};\n    const cand =\n      (p.mainPrice && p.mainPrice.amount) ||\n      (p.normal && p.normal.amount) ||\n      (p.buyNow && p.buyNow.amount) ||\n      p.amount ||\n      (typeof p === 'string' ? p : null);\n    return cand || 'N/A';\n  }\n  function cleanUrl(node, id) {\n    let u = typeof node.url === 'string' ? node.url : '';\n    const rm = u.match(/[?&]redirect=([^&]+)/);\n    if (rm) { try { u = decodeURIComponent(rm[1]); } catch (e) { /* keep u */ } }\n    const om = u.match(/https?:\\/\\/[a-z.]*allegro[a-z.]*\\/oferta\\/[^?&\"'<> ]+/i);\n    if (om) return om[0];\n    return id ? ('https://allegro.pl/oferta/' + id) : u;\n  }\n  function imgOf(node) {\n    if (typeof node.mainThumbnail === 'string' && node.mainThumbnail) return node.mainThumbnail;\n    const p = node.photos && node.photos[0];\n    if (p) return p.small || p.medium || '';\n    return '';\n  }\n  function looksLikeOffer(node) {\n    return idOf(node) !== '' && textOf(node.title).length > 0 &&\n      node.price && typeof node.price === 'object' && node.price.mainPrice;\n  }\n  function pushOffer(node) {\n    const id = idOf(node);\n    if (!id || seen.has(id)) return;\n    seen.add(id);\n    offers.push({\n      id,\n      title: (textOf(node.title) || node.alt || 'No title').trim(),\n      url: cleanUrl(node, id),\n      price: priceOf(node),\n      img: imgOf(node),\n    });\n  }\n  function walk(node, depth) {\n    if (depth > 50 || node == null) return;\n    if (Array.isArray(node)) { for (const n of node) walk(n, depth + 1); return; }\n    if (typeof node === 'object') {\n      if (looksLikeOffer(node)) pushOffer(node);\n      for (const k in node) walk(node[k], depth + 1);\n    }\n  }\n\n  // Strategy A: embedded JSON blocks (primary).\n  const reScript = /<script[^>]*type=[\"']application\\/json[\"'][^>]*>([\\s\\S]*?)<\\/script>/gi;\n  let m;\n  while ((m = reScript.exec(html)) !== null) {\n    let data;\n    try { data = JSON.parse(m[1]); } catch (e) { continue; }\n    walk(data, 0);\n  }\n\n  // Strategy B: regex fallback over offer links (only if JSON yielded nothing).\n  if (offers.length === 0) {\n    const re = /https?:\\/\\/[a-z.]*allegro[a-z.]*\\/oferta\\/[^\"'\\\\ <>]+/gi;\n    while ((m = re.exec(html)) !== null) {\n      const url = m[0];\n      const rep = url.match(/[?&]rep=(\\d+)/);\n      const tail = url.match(/-(\\d{5,})(?:[?#]|$)/);\n      const id = rep ? rep[1] : (tail ? tail[1] : '');\n      if (!id || seen.has(id)) continue;\n      seen.add(id);\n      offers.push({ id, title: 'No title', url: url.split('?')[0], price: 'N/A', img: '' });\n    }\n  }\n\n  return offers;\n}\n\nfunction looksLikeDataDomeBlock(html) {\n  if (!html || typeof html !== 'string') return false;\n  // Real DataDome challenge pages contain captcha-delivery.com and a dd-challenge marker.\n  return /captcha-delivery\\.com/i.test(html)\n      && /datadome/i.test(html)\n      || /\\/challenge\\.[a-z]+\\?/i.test(html)\n      && /id=\"dd-challenge\"/i.test(html);\n}\n\nfunction parseAllegroOffers(input) {\n  // `input` is the n8n Code node's `$input.all()` array — but in n8n Code v2 we have\n  // `$input.all()` directly; for standalone tests we accept a plain array.\n  // Returns [{json: {...}}] items with namespaced id + source + (optional) warning.\n  const items = [];\n  const seenIds = new Set();\n  let keywordForWarning = 'unknown';\n  for (const entry of (Array.isArray(input) ? input : [])) {\n    const raw = entry && entry.json ? (entry.json.data != null ? entry.json.data : (entry.json.body != null ? entry.json.body : '')) : '';\n    const html = typeof raw === 'string' ? raw : JSON.stringify(raw);\n    // Try to recover the keyword from the entry (n8n doesn't always pass it through HTTP nodes).\n    // We emit a single warning if the HTML looks like a DataDome block.\n    if (looksLikeDataDomeBlock(html)) {\n      items.push({ json: { id: 'allegro:skip:' + keywordForWarning, source: 'allegro', title: '⚠ Allegro scrape returned a DataDome block', url: '', price: '', img: '', warning: true } });\n      continue;\n    }\n    for (const o of parseAllegro(html)) {\n      if (seenIds.has(o.id)) continue;\n      seenIds.add(o.id);\n      items.push({ json: { id: 'allegro:' + o.id, source: 'allegro', title: o.title, url: o.url, price: o.price, img: o.img } });\n    }\n  }\n  return items;\n}\n\nreturn parseAllegroOffers($input.all());"
+      },
+      "id": "parse-offers-node1",
+      "name": "Parse offers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        400
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "rowNotExists",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "mMZgIKYRQ1Dulvm9"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "offerId",
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        }
+      },
+      "id": "filter-new-dt001",
+      "name": "Filter New",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "mMZgIKYRQ1Dulvm9"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "offerId": "={{ $json.id }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "save-seen-dt001",
+      "name": "Save Seen",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1504,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Body of the Compose Email n8n Code node.\n// Pure module — `composeEmail(inputAll)` returns an n8n item array\n// (empty array => Send Email node is skipped via n8n's empty-input semantics).\n\nfunction esc(s) {\n  return String(s == null ? '' : s)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;');\n}\n\nfunction offerRow(o) {\n  const img = o.img\n    ? '<img src=\"' + esc(o.img) + '\" width=\"120\" alt=\"\" style=\"display:block;border-radius:6px;border:1px solid #eee\">'\n    : '';\n  const badge = o.source === 'lokalnie'\n    ? ' <span style=\"background:#0a7;padding:1px 6px;border-radius:8px;color:#fff;font-size:11px\">Lokalnie</span>'\n    : o.source === 'allegro-via-lokalnie'\n      ? ' <span style=\"background:#06a;padding:1px 6px;border-radius:8px;color:#fff;font-size:11px\">Lokalnie→Allegro</span>'\n      : '';\n  return '<table style=\"margin:0 0 14px;border-collapse:collapse\">'\n    + '<tr>'\n    + '<td style=\"vertical-align:top;width:120px\"><a href=\"' + esc(o.url) + '\">' + img + '</a></td>'\n    + '<td style=\"vertical-align:top;padding-left:12px\">'\n    + '<a href=\"' + esc(o.url) + '\" style=\"font-weight:bold;color:#0b5;text-decoration:none\">' + esc(o.title || 'No title') + badge + '</a><br>'\n    + '<span style=\"font-size:16px;color:#111\">' + esc(o.price != null ? o.price : 'N/A') + ' PLN</span>'\n    + '</td></tr></table>';\n}\n\nfunction warningRow(o) {\n  return '<p style=\"color:#a55;font-style:italic;margin:0 0 10px\">' + esc(o.title || '⚠ warning') + '</p>';\n}\n\nfunction composeEmail(inputAll) {\n  const all = Array.isArray(inputAll) ? inputAll.map(i => (i && i.json) || i).filter(Boolean) : [];\n\n  const allegroOffers = all.filter(o => !o.warning && (o.source === 'allegro'));\n  const lokalnieOffers = all.filter(o => !o.warning && (o.source === 'lokalnie' || o.source === 'allegro-via-lokalnie'));\n  const warnings = all.filter(o => o.warning);\n\n  const hasAnything = allegroOffers.length > 0 || lokalnieOffers.length > 0 || warnings.length > 0;\n  if (!hasAnything) return [];\n\n  const totalNew = allegroOffers.length + lokalnieOffers.length;\n  let body = '<div style=\"font-family:Arial,Helvetica,sans-serif;color:#222\">';\n  body += '<h2 style=\"margin:0 0 4px\">Allegro Militaria Monitor</h2>';\n  body += '<p style=\"margin:0 0 16px;color:#666\">Found ' + totalNew + ' new offer(s)</p>';\n\n  body += '<h3 style=\"margin:16px 0 8px;border-bottom:1px solid #eee;padding-bottom:4px\">Allegro.pl</h3>';\n  if (allegroOffers.length === 0) {\n    const w = warnings.filter(o => /^allegro:/.test(o.id));\n    if (w.length) w.forEach(o => { body += warningRow(o); });\n    else body += '<p><em>No new offers on Allegro.pl.</em></p>';\n  } else {\n    allegroOffers.forEach(o => { body += offerRow(o); });\n    warnings.filter(o => /^allegro:/.test(o.id)).forEach(o => { body += warningRow(o); });\n  }\n\n  body += '<h3 style=\"margin:16px 0 8px;border-bottom:1px solid #eee;padding-bottom:4px\">Allegro Lokalnie</h3>';\n  if (lokalnieOffers.length === 0) {\n    const w = warnings.filter(o => /^lokalnie:/.test(o.id));\n    if (w.length) w.forEach(o => { body += warningRow(o); });\n    else body += '<p><em>No new offers on Allegro Lokalnie.</em></p>';\n  } else {\n    lokalnieOffers.forEach(o => { body += offerRow(o); });\n    warnings.filter(o => /^lokalnie:/.test(o.id)).forEach(o => { body += warningRow(o); });\n  }\n\n  body += '<p style=\"color:#999;font-size:12px;margin-top:20px\">Run time: ' + new Date().toISOString() + '</p>';\n  body += '</div>';\n\n  const to = 'krzysztof.ciepka@gmail.com';\n  const subject = '[Allegro Militaria] ' + totalNew + ' new offer(s) found';\n  const mime = 'To: ' + to + '\\r\\n'\n    + 'Subject: =?UTF-8?B?' + Buffer.from(subject, 'utf8').toString('base64') + '?=\\r\\n'\n    + 'MIME-Version: 1.0\\r\\n'\n    + 'Content-Type: text/html; charset=UTF-8\\r\\n'\n    + 'Content-Transfer-Encoding: base64\\r\\n\\r\\n'\n    + Buffer.from(body, 'utf8').toString('base64');\n  const raw = Buffer.from(mime, 'utf8').toString('base64')\n    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');\n\n  return [{ json: { to, subject, body, raw } }];\n}\n\nreturn composeEmail($input.all());"
+      },
+      "id": "f0000003-0001-4000-0000-000000000004",
+      "name": "Compose Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        400
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ raw: $json.raw }) }}",
+        "options": {}
+      },
+      "id": "f0000003-0001-4000-0000-000000000006",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1504,
+        400
+      ],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "gmailsendoauth01",
+          "name": "Gmail Send OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://allegrolokalnie.pl/oferty/' + $json.lokalnieCategoryPath + '/q/' + encodeURIComponent($json.keyword) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "f0000003-0001-4000-0000-000000000010",
+      "name": "Scrape Lokalnie",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        752,
+        700
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Allegro Lokalnie listing parser. Pure JS, no deps.\n// Lokalnie exposes offers as JSON-LD <script type=\"application/ld+json\">ItemList</script>.\n//\n// Exports:\n//   parseLokalnie(html)            -> Offer[]\n//   parseLokalnieOffers(input, keyword) -> n8n-item[]   (outer loop wrapper; keyword is per-call)\n\nfunction parseLokalnie(html) {\n  const offers = [];\n  const seen = new Set();\n  if (!html || typeof html !== 'string') return offers;\n\n  // Find all JSON-LD blocks; pick the first parseable ItemList.\n  const reScript = /<script type=\"application\\/ld\\+json\"[^>]*>([\\s\\S]*?)<\\/script>/gi;\n  let m;\n  let itemList = null;\n  while ((m = reScript.exec(html)) !== null) {\n    let data;\n    try { data = JSON.parse(m[1]); } catch (e) { continue; }\n    if (data && data['@type'] === 'ItemList' && Array.isArray(data.itemListElement)) {\n      itemList = data.itemListElement;\n      break;\n    }\n  }\n  if (!itemList) return offers;\n\n  function lastSlug(url) {\n    if (!url) return '';\n    const u = String(url).split(/[?#]/)[0].replace(/\\/$/, '');\n    const segs = u.split('/');\n    return segs[segs.length - 1] || '';\n  }\n  function allegroNumIdFromUrl(url) {\n    const m = /allegro\\.pl\\/oferta\\/[^?#]+?-(\\d{5,})\\b/i.exec(String(url || ''));\n    return m ? m[1] : '';\n  }\n\n  for (const li of itemList) {\n    const item = li && li.item ? li.item : null;\n    if (!item || typeof item !== 'object') continue;\n\n    const name = item.name || 'No title';\n    const url = item.url || '';\n    const priceRaw = item.offers && typeof item.offers.price !== 'undefined'\n      ? String(item.offers.price)\n      : 'N/A';\n    const img = (item.image && (item.image.contentUrl || item.image.url)) || '';\n    const condition = item.itemCondition && /\\/UsedCondition$/.test(item.itemCondition)\n      ? 'used' : 'new';\n\n    const allegroNum = allegroNumIdFromUrl(url);\n    let id, source;\n    if (allegroNum) {\n      id = 'allegro:' + allegroNum;\n      source = 'allegro-via-lokalnie';\n    } else {\n      const slug = lastSlug(url);\n      if (!slug) continue; // skip items with no usable id\n      id = 'lokalnie:' + slug;\n      source = 'lokalnie';\n    }\n    if (seen.has(id)) continue;\n    seen.add(id);\n    offers.push({ id, source, title: name, url, price: priceRaw, img, condition });\n  }\n  return offers;\n}\n\nfunction parseLokalnieOffers(input, keyword) {\n  // `input` is the n8n Code node's `$input.all()` array (array of {json:{...}}).\n  // `keyword` is provided by the Split Keywords item via `$('Split Keywords').item.json.keyword`\n  // in n8n, but for standalone use we accept it as a parameter.\n  const items = [];\n  const seenIds = new Set();\n  const kw = keyword || 'unknown';\n  for (const entry of (Array.isArray(input) ? input : [])) {\n    const j = entry && entry.json ? entry.json : {};\n    // If Continue On Fail produced an error marker, emit a warning.\n    if (j.error || (j.__error && j.__error === true)) {\n      items.push({ json: { id: 'lokalnie:skip:' + kw, source: 'lokalnie', title: '⚠ Lokalnie scrape failed for keyword: ' + kw, url: '', price: '', img: '', warning: true } });\n      continue;\n    }\n    const raw = j.data != null ? j.data : (j.body != null ? j.body : '');\n    const html = typeof raw === 'string' ? raw : (raw === '' ? '' : JSON.stringify(raw));\n    if (looksLikeEmptyHtml(html)) {\n      // Server returned an empty/blank page; treat as a soft warning.\n      items.push({ json: { id: 'lokalnie:skip:' + kw, source: 'lokalnie', title: '⚠ Lokalnie returned empty HTML for keyword: ' + kw, url: '', price: '', img: '', warning: true } });\n      continue;\n    }\n    for (const o of parseLokalnie(html)) {\n      if (seenIds.has(o.id)) continue;\n      seenIds.add(o.id);\n      items.push({ json: o });\n    }\n  }\n  return items;\n}\n\nfunction looksLikeEmptyHtml(html) {\n  // Truly empty or just a skeleton with no ItemList вообще.\n  return !html || html.trim().length < 200 || /<title>\\s*<\\/title>/i.test(html);\n}\n\nconst kw = $('Split Keywords').item.json.keyword;\nreturn parseLokalnieOffers($input.all(), kw);"
+      },
+      "id": "f0000003-0001-4000-0000-000000000011",
+      "name": "Parse Lokalnie",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        700
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "leftValueCustomRef": false
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.warning }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f0000003-0001-4000-0000-000000000012",
+      "name": "Route Warnings",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Every 8am and 8pm": {
+      "main": [
+        [
+          {
+            "node": "Split Keywords",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Keywords": {
+      "main": [
+        [
+          {
+            "node": "Scrape Allegro",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Scrape Lokalnie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape Allegro": {
+      "main": [
+        [
+          {
+            "node": "Parse offers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape Lokalnie": {
+      "main": [
+        [
+          {
+            "node": "Parse Lokalnie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse offers": {
+      "main": [
+        [
+          {
+            "node": "Route Warnings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Lokalnie": {
+      "main": [
+        [
+          {
+            "node": "Route Warnings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Warnings": {
+      "main": [
+        [
+          {
+            "node": "Filter New",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New": {
+      "main": [
+        [
+          {
+            "node": "Save Seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Seen": {
+      "main": [
+        [
+          {
+            "node": "Compose Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Email": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
