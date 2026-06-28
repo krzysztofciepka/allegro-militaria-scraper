@@ -32,6 +32,7 @@ settings = json.dumps(wf.get("settings") or {}, ensure_ascii=False)
 version_id = str(uuid.uuid4())
 
 con = sqlite3.connect(DB)
+AUTHOR = "kc@opencode"
 try:
     cur = con.cursor()
     cur.execute(
@@ -41,15 +42,26 @@ try:
                   settings = ?,
                   active = 0,
                   versionId = ?,
+                  activeVersionId = ?,
                   versionCounter = versionCounter + 1,
                   updatedAt = CURRENT_TIMESTAMP
             WHERE id = ?""",
-        (nodes, connections, settings, version_id, WORKFLOW_ID),
+        (nodes, connections, settings, version_id, version_id, WORKFLOW_ID),
     )
     print(f"rows updated: {cur.rowcount}")
+
+    # Insert into workflow_history so n8n can activate/publish the workflow.
+    # Without this, activation fails with "Version not found".
+    cur.execute(
+        """INSERT OR REPLACE INTO workflow_history
+           (versionId, workflowId, authors, nodes, connections, name, autosaved)
+           VALUES (?, ?, ?, ?, ?, ?, 0)""",
+        (version_id, WORKFLOW_ID, AUTHOR, nodes, connections, wf.get("name", "")),
+    )
+
     con.commit()
     cur.execute(
-        "SELECT id, name, active, versionId, versionCounter, updatedAt FROM workflow_entity WHERE id = ?",
+        "SELECT id, name, active, versionId, activeVersionId, versionCounter FROM workflow_entity WHERE id = ?",
         (WORKFLOW_ID,),
     )
     print("post-update row:", cur.fetchone())
