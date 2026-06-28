@@ -354,13 +354,7 @@
             "node": "Save Seen",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Save Seen": {
-      "main": [
-        [
+          },
           {
             "node": "Compose Email",
             "type": "main",
