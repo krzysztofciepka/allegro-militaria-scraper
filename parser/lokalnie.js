@@ -34,6 +34,23 @@ function parseLokalnie(html) {
     const m = /allegro\.pl\/oferta\/[^?#]+?-(\d{5,})\b/i.exec(String(url || ''));
     return m ? m[1] : '';
   }
+  function keyOf(url) {
+    const num = allegroNumIdFromUrl(url);
+    return num ? 'allegro:' + num : 'lokalnie:' + lastSlug(url);
+  }
+
+  // JSON-LD image.contentUrl is the offer PAGE url for cross-syndicated Allegro
+  // offers; the real thumbnail only exists in the listing's <article> card <img>.
+  // Map offer key -> card img src as a fallback source.
+  const domImgs = {};
+  const reCard = /<article[\s\S]*?<\/article>/gi;
+  let card;
+  while ((card = reCard.exec(html)) !== null) {
+    const c = card[0];
+    const href = /href="(https?:\/\/(?:www\.)?allegro(?:lokalnie)?\.pl\/oferta\/[^"]+)"/i.exec(c);
+    const src = /<img[\s\S]{0,300}?src="(https?:\/\/[a-z0-9.-]*allegroimg\.com\/[^"]+)"/i.exec(c);
+    if (href && src) domImgs[keyOf(href[1])] = src[1];
+  }
 
   for (const li of itemList) {
     const item = li && li.item ? li.item : null;
@@ -44,7 +61,6 @@ function parseLokalnie(html) {
     const priceRaw = item.offers && typeof item.offers.price !== 'undefined'
       ? String(item.offers.price)
       : 'N/A';
-    const img = (item.image && (item.image.contentUrl || item.image.url)) || '';
     const condition = item.itemCondition && /\/UsedCondition$/.test(item.itemCondition)
       ? 'used' : 'new';
 
@@ -59,6 +75,8 @@ function parseLokalnie(html) {
       id = 'lokalnie:' + slug;
       source = 'lokalnie';
     }
+    let img = (item.image && (item.image.contentUrl || item.image.url)) || '';
+    if (!/^https?:\/\/[a-z0-9.-]*allegroimg\.com\//i.test(img)) img = domImgs[id] || '';
     if (seen.has(id)) continue;
     seen.add(id);
     offers.push({ id, source, title: name, url, price: priceRaw, img, condition });

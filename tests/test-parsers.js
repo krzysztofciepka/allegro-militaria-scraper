@@ -110,6 +110,27 @@ test('parseLokalnie fixture has both lokalnie and allegro-via-lokalnie sources',
   assert.ok(sources.has('allegro-via-lokalnie'), 'fixture must have cross-syndicated allegro items');
 });
 
+test('parseLokalnie cross-syndicated offers get real DOM-card images (JSON-LD lies)', () => {
+  // JSON-LD image.contentUrl for allegro-via-lokalnie items is the offer PAGE url;
+  // the real thumbnail lives in the listing's <article> card <img>.
+  const offers = parseLokalnie(read('lokalnie-listing.html'));
+  const cross = offers.filter(o => o.source === 'allegro-via-lokalnie');
+  assert.ok(cross.length > 0, 'fixture must have cross-syndicated items');
+  for (const o of cross) {
+    assert.ok(/^https:\/\/[a-z0-9.]*allegroimg\.com\//.test(o.img),
+      'cross-syndicated offer must get an allegroimg URL, got: ' + o.img + ' (id ' + o.id + ')');
+  }
+});
+
+test('parseLokalnie native offers keep their JSON-LD images', () => {
+  const offers = parseLokalnie(read('lokalnie-listing.html'));
+  const native = offers.filter(o => o.source === 'lokalnie');
+  assert.ok(native.length > 0);
+  for (const o of native) {
+    assert.ok(/^https:\/\/[a-z0-9.]*allegroimg\.com\//.test(o.img), 'native offer lost its img: ' + o.id);
+  }
+});
+
 test('parseLokalnie ids are unique', () => {
   const offers = parseLokalnie(read('lokalnie-listing.html'));
   const ids = offers.map(o => o.id);
