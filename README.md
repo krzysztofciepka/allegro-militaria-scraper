@@ -47,6 +47,25 @@ bash scripts/deploy.sh
 3. Copies `workflow.json` to `~/allegro-militaria-scraper-workflow.json` on the server.
 4. Prints manual n8n UI steps (import JSON, create `Scrape.do` credential, activate, smoke test).
 
+## Gmail OAuth: stop the 7-day re-auth
+
+The `Send Email` node uses a Gmail API OAuth2 credential (`Gmail Send OAuth2`).
+If the GCP OAuth app is left in **Testing** publishing status, Google expires
+refresh tokens after 7 days — n8n then fails to send until you re-authenticate.
+
+One-time fix:
+
+1. Open [GCP Console](https://console.cloud.google.com/) → the project that owns
+   the OAuth client → **APIs & Services → OAuth consent screen** (Audience page).
+2. Click **Publish app** (Testing → In production). With only the `gmail.send`
+   scope no Google verification is required; the consent screen will just show
+   an "unverified app" warning.
+3. In n8n (http://89.167.71.120:5678) → Credentials → `Gmail Send OAuth2` →
+   **Reconnect**. Sign in once more, click *Advanced → Go to … (unsafe)* past
+   the unverified-app warning.
+4. Done — refresh tokens issued by a production app do not expire on a timer,
+   so no more weekly re-auth.
+
 ## Spec & plan
 
 - Design: [`docs/superpowers/specs/2026-06-28-lokalnie-and-scrapedo-design.md`](docs/superpowers/specs/2026-06-28-lokalnie-and-scrapedo-design.md)

@@ -8,7 +8,7 @@ const path = require('node:path');
 const { parseAllegro, looksLikeDataDomeBlock, parseAllegroOffers } = require('../parser/allegro.js');
 const { parseLokalnie, parseLokalnieOffers } = require('../parser/lokalnie.js');
 const { splitKeywords, KEYWORDS, ALLEGRO_CATEGORY_ID, LOKALNIE_CATEGORY_PATH } = require('../parser/keywords.js');
-const { composeEmail } = require('../parser/compose-email.js');
+const { composeEmail, sanitizeImg } = require('../parser/compose-email.js');
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const read = (name) => fs.readFileSync(path.join(FIXTURES, name), 'utf8');
@@ -170,6 +170,52 @@ test('composeEmail groups lokaliie + allegro-via-lokalnie offers under Lokalnie 
   // body should contain both Lokalnie and Allegro headers
   assert.ok(items[0].json.body.includes('Allegro Lokalnie'));
   assert.ok(items[0].json.body.includes('Allegro.pl'));
+});
+
+// --- sanitizeImg ---
+
+test('sanitizeImg drops offer-page URLs (lokalnie cross-syndication bug)', () => {
+  assert.equal(sanitizeImg('https://allegro.pl/oferta/tasak-argentynski-18713645310'), '');
+  assert.equal(sanitizeImg('https://allegrolokalnie.pl/oferta/noz-tasak'), '');
+});
+
+test('sanitizeImg drops non-allegroimg hosts and junk', () => {
+  assert.equal(sanitizeImg('https://evil.example.com/a.jpg'), '');
+  assert.equal(sanitizeImg('https://allegroimg.com.evil.com/x'), '');
+  assert.equal(sanitizeImg(''), '');
+  assert.equal(sanitizeImg(null), '');
+});
+
+test('sanitizeImg rewrites /original/ to /s360/ on allegroimg URLs', () => {
+  assert.equal(
+    sanitizeImg('https://a.allegroimg.com/original/1ea107/3e6d25c14270b48bdb10c38dcdd4'),
+    'https://a.allegroimg.com/s360/1ea107/3e6d25c14270b48bdb10c38dcdd4');
+});
+
+test('sanitizeImg keeps already-sized allegroimg URLs unchanged', () => {
+  assert.equal(
+    sanitizeImg('https://a.allegroimg.com/s360/1ea107/3e6d25c14270b48bdb10c38dcdd4'),
+    'https://a.allegroimg.com/s360/1ea107/3e6d25c14270b48bdb10c38dcdd4');
+  assert.equal(
+    sanitizeImg('https://a.allegroimg.com/s128/ab/cd'),
+    'https://a.allegroimg.com/s128/ab/cd');
+});
+
+test('composeEmail omits <img> for offer-page img URLs, keeps row', () => {
+  const items = composeEmail([
+    { json: { id: 'allegro:99', source: 'allegro-via-lokalnie', title: 'X', url: 'https://allegro.pl/oferta/x-99', price: '3', img: 'https://allegro.pl/oferta/x-99' } },
+  ]);
+  assert.equal(items.length, 1);
+  assert.ok(!items[0].json.body.includes('<img'), 'broken img must be omitted');
+  assert.ok(items[0].json.body.includes('X'), 'offer row itself must remain');
+});
+
+test('composeEmail uses s360 variant in <img> src', () => {
+  const items = composeEmail([
+    { json: { id: 'lokalnie:slug', source: 'lokalnie', title: 'L', url: 'https://allegrolokalnie.pl/oferta/slug', price: '2', img: 'https://a.allegroimg.com/original/ab/cd' } },
+  ]);
+  assert.ok(items[0].json.body.includes('https://a.allegroimg.com/s360/ab/cd'));
+  assert.ok(!items[0].json.body.includes('/original/'));
 });
 
 // --- summary ---

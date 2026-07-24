@@ -8,9 +8,19 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
+// Only allegroimg CDN URLs are trusted; Lokalnie's JSON-LD sets image.contentUrl
+// to the offer PAGE url for cross-syndicated Allegro offers, and /original/
+// variants are too heavy for Gmail's image proxy.
+function sanitizeImg(u) {
+  const s = String(u == null ? '' : u).trim();
+  if (!/^https?:\/\/([a-z0-9-]+\.)*allegroimg\.com\//i.test(s)) return '';
+  return s.replace(/^(https?:\/\/[^/]+)\/original\//i, '$1/s360/');
+}
+
 function offerRow(o) {
-  const img = o.img
-    ? '<img src="' + esc(o.img) + '" width="120" alt="" style="display:block;border-radius:6px;border:1px solid #eee">'
+  const imgSrc = sanitizeImg(o.img);
+  const img = imgSrc
+    ? '<img src="' + esc(imgSrc) + '" width="120" alt="" style="display:block;border-radius:6px;border:1px solid #eee">'
     : '';
   const badge = o.source === 'lokalnie'
     ? ' <span style="background:#0a7;padding:1px 6px;border-radius:8px;color:#fff;font-size:11px">Lokalnie</span>'
@@ -82,4 +92,4 @@ function composeEmail(inputAll) {
   return [{ json: { to, subject, body, raw } }];
 }
 
-module.exports = { composeEmail };
+module.exports = { composeEmail, sanitizeImg };
